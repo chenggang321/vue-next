@@ -175,7 +175,8 @@ export function buildSlots(
     const slotFunction = createFunctionExpression(
       slotProps,
       slotChildren,
-      false,
+      false /* newline */,
+      true /* isSlot */,
       slotChildren.length ? slotChildren[0].loc : slotLoc
     )
 
@@ -208,7 +209,7 @@ export function buildSlots(
         // remove node
         children.splice(i, 1)
         i--
-        __DEV__ && assert(dynamicSlots.length > 0)
+        __TEST__ && assert(dynamicSlots.length > 0)
         // attach this slot to previous conditional
         let conditional = dynamicSlots[
           dynamicSlots.length - 1
@@ -244,7 +245,7 @@ export function buildSlots(
             createFunctionExpression(
               createForLoopParams(parseResult),
               buildDynamicSlot(slotName, slotFunction),
-              true
+              true /* force newline */
             )
           ])
         )
@@ -314,7 +315,8 @@ function buildDefaultSlot(
     createFunctionExpression(
       slotProps,
       children,
-      false,
+      false /* newline */,
+      true /* isSlot */,
       children.length ? children[0].loc : loc
     )
   )

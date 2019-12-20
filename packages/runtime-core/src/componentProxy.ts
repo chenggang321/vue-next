@@ -1,5 +1,5 @@
 import { ComponentInternalInstance, Data, Emit } from './component'
-import { nextTick } from './scheduler'
+import { nextTick, queueJob } from './scheduler'
 import { instanceWatch } from './apiWatch'
 import { EMPTY_OBJ, hasOwn, isGloballyWhitelisted } from '@vue/shared'
 import {
@@ -11,6 +11,10 @@ import {
 import { UnwrapRef, ReactiveEffect } from '@vue/reactivity'
 import { warn } from './warning'
 import { Slots } from './componentSlots'
+import {
+  currentRenderingInstance,
+  markAttrsAccessed
+} from './componentRenderUtils'
 
 // public properties exposed on the proxy, which is used as the render context
 // in templates (as `this` in the render option)
@@ -22,7 +26,6 @@ export type ComponentPublicInstance<
   M extends MethodOptions = {},
   PublicProps = P
 > = {
-  [key: string]: any
   $data: D
   $props: PublicProps
   $attrs: Data
@@ -42,16 +45,25 @@ export type ComponentPublicInstance<
   ExtractComputedReturns<C> &
   M
 
-const publicPropertiesMap = {
-  $data: 'data',
-  $props: 'propsProxy',
-  $attrs: 'attrs',
-  $slots: 'slots',
-  $refs: 'refs',
-  $parent: 'parent',
-  $root: 'root',
-  $emit: 'emit',
-  $options: 'type'
+const publicPropertiesMap: Record<
+  string,
+  (i: ComponentInternalInstance) => any
+> = {
+  $: i => i,
+  $el: i => i.vnode.el,
+  $cache: i => i.renderCache || (i.renderCache = []),
+  $data: i => i.data,
+  $props: i => i.propsProxy,
+  $attrs: i => i.attrs,
+  $slots: i => i.slots,
+  $refs: i => i.refs,
+  $parent: i => i.parent,
+  $root: i => i.root,
+  $emit: i => i.emit,
+  $options: i => i.type,
+  $forceUpdate: i => () => queueJob(i.update),
+  $nextTick: () => nextTick,
+  $watch: i => instanceWatch.bind(i)
 }
 
 const enum AccessTypes {
@@ -62,54 +74,87 @@ const enum AccessTypes {
 
 export const PublicInstanceProxyHandlers: ProxyHandler<any> = {
   get(target: ComponentInternalInstance, key: string) {
-    const { renderContext, data, props, propsProxy, accessCache, type } = target
+    // fast path for unscopables when using `with` block
+    if (__RUNTIME_COMPILE__ && (key as any) === Symbol.unscopables) {
+      return
+    }
+    const {
+      renderContext,
+      data,
+      props,
+      propsProxy,
+      accessCache,
+      type,
+      sink
+    } = target
+
+    // data / props / renderContext
     // This getter gets called for every property access on the render context
     // during render and is a major hotspot. The most expensive part of this
     // is the multiple hasOwn() calls. It's much faster to do a simple property
     // access on a plain object, so we use an accessCache object (with null
     // prototype) to memoize what access type a key corresponds to.
-    const n = accessCache![key]
-    if (n !== undefined) {
-      switch (n) {
-        case AccessTypes.DATA:
-          return data[key]
-        case AccessTypes.CONTEXT:
-          return renderContext[key]
-        case AccessTypes.PROPS:
-          return propsProxy![key]
-      }
-    } else if (data !== EMPTY_OBJ && hasOwn(data, key)) {
-      accessCache![key] = AccessTypes.DATA
-      return data[key]
-    } else if (hasOwn(renderContext, key)) {
-      accessCache![key] = AccessTypes.CONTEXT
-      return renderContext[key]
-    } else if (hasOwn(props, key)) {
-      // only cache props access if component has declared (thus stable) props
-      if (type.props != null) {
-        accessCache![key] = AccessTypes.PROPS
-      }
-      // return the value from propsProxy for ref unwrapping and readonly
-      return propsProxy![key]
-    } else if (key === '$cache') {
-      return target.renderCache || (target.renderCache = [])
-    } else if (key === '$el') {
-      return target.vnode.el
-    } else if (hasOwn(publicPropertiesMap, key)) {
-      return target[publicPropertiesMap[key]]
-    }
-    // methods are only exposed when options are supported
-    if (__FEATURE_OPTIONS__) {
-      switch (key) {
-        case '$forceUpdate':
-          return target.update
-        case '$nextTick':
-          return nextTick
-        case '$watch':
-          return instanceWatch.bind(target)
+    if (key[0] !== '$') {
+      const n = accessCache![key]
+      if (n !== undefined) {
+        switch (n) {
+          case AccessTypes.DATA:
+            return data[key]
+          case AccessTypes.CONTEXT:
+            return renderContext[key]
+          case AccessTypes.PROPS:
+            return propsProxy![key]
+        }
+      } else if (data !== EMPTY_OBJ && hasOwn(data, key)) {
+        accessCache![key] = AccessTypes.DATA
+        return data[key]
+      } else if (hasOwn(renderContext, key)) {
+        accessCache![key] = AccessTypes.CONTEXT
+        return renderContext[key]
+      } else if (hasOwn(props, key)) {
+        // only cache props access if component has declared (thus stable) props
+        if (type.props != null) {
+          accessCache![key] = AccessTypes.PROPS
+        }
+        // return the value from propsProxy for ref unwrapping and readonly
+        return propsProxy![key]
       }
     }
-    return target.user[key]
+
+    // public $xxx properties & user-attached properties (sink)
+    const publicGetter = publicPropertiesMap[key]
+    let cssModule
+    if (publicGetter != null) {
+      if (__DEV__ && key === '$attrs') {
+        markAttrsAccessed()
+      }
+      return publicGetter(target)
+    } else if (
+      __BUNDLER__ &&
+      (cssModule = type.__cssModules) != null &&
+      (cssModule = cssModule[key])
+    ) {
+      return cssModule
+    } else if (hasOwn(sink, key)) {
+      return sink[key]
+    } else if (__DEV__ && currentRenderingInstance != null) {
+      warn(
+        `Property ${JSON.stringify(key)} was accessed during render ` +
+          `but is not defined on instance.`
+      )
+    }
+  },
+
+  has(target: ComponentInternalInstance, key: string) {
+    const { data, accessCache, renderContext, type, sink } = target
+    return (
+      accessCache![key] !== undefined ||
+      (data !== EMPTY_OBJ && hasOwn(data, key)) ||
+      hasOwn(renderContext, key) ||
+      (type.props != null && hasOwn(type.props, key)) ||
+      hasOwn(publicPropertiesMap, key) ||
+      hasOwn(sink, key)
+    )
   },
 
   set(target: ComponentInternalInstance, key: string, value: any): boolean {
@@ -131,19 +176,15 @@ export const PublicInstanceProxyHandlers: ProxyHandler<any> = {
         warn(`Attempting to mutate prop "${key}". Props are readonly.`, target)
       return false
     } else {
-      target.user[key] = value
+      target.sink[key] = value
     }
     return true
   }
 }
 
-if (__RUNTIME_COMPILE__) {
-  // this trap is only called in browser-compiled render functions that use
-  // `with (this) {}`
-  PublicInstanceProxyHandlers.has = (
-    _: ComponentInternalInstance,
-    key: string
-  ): boolean => {
+export const runtimeCompiledRenderProxyHandlers = {
+  ...PublicInstanceProxyHandlers,
+  has(_target: ComponentInternalInstance, key: string) {
     return key[0] !== '_' && !isGloballyWhitelisted(key)
   }
 }

@@ -19,8 +19,7 @@ export function createCompilerError<T extends number>(
   messages?: { [code: number]: string }
 ): T extends ErrorCodes ? CoreCompilerError : CompilerError {
   const msg = __DEV__ || !__BROWSER__ ? (messages || errorMessages)[code] : code
-  const locInfo = loc ? ` (${loc.start.line}:${loc.start.column})` : ``
-  const error = new SyntaxError(msg + locInfo) as CompilerError
+  const error = new SyntaxError(String(msg)) as CompilerError
   error.code = code
   error.loc = loc
   return error as any
@@ -87,6 +86,8 @@ export const enum ErrorCodes {
   // generic errors
   X_PREFIX_ID_NOT_SUPPORTED,
   X_MODULE_MODE_NOT_SUPPORTED,
+  X_CACHE_HANDLER_NOT_SUPPORTED,
+  X_SCOPE_ID_NOT_SUPPORTED,
 
   // Special value for higher-order compilers to pick up the last code
   // to avoid collision of error codes. This should always be kept as the last
@@ -178,5 +179,7 @@ export const errorMessages: { [code: number]: string } = {
 
   // generic errors
   [ErrorCodes.X_PREFIX_ID_NOT_SUPPORTED]: `"prefixIdentifiers" option is not supported in this build of compiler.`,
-  [ErrorCodes.X_MODULE_MODE_NOT_SUPPORTED]: `ES module mode is not supported in this build of compiler.`
+  [ErrorCodes.X_MODULE_MODE_NOT_SUPPORTED]: `ES module mode is not supported in this build of compiler.`,
+  [ErrorCodes.X_CACHE_HANDLER_NOT_SUPPORTED]: `"cacheHandlers" option is only supported when the "prefixIdentifiers" option is enabled.`,
+  [ErrorCodes.X_SCOPE_ID_NOT_SUPPORTED]: `"scopeId" option is only supported in module mode.`
 }

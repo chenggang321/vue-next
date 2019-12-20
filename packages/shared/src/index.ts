@@ -1,6 +1,10 @@
+import { makeMap } from './makeMap'
+
+export { makeMap }
 export * from './patchFlags'
-export { isGloballyWhitelisted } from './globalsWhitelist'
-export { makeMap } from './makeMap'
+export * from './globalsWhitelist'
+export * from './codeframe'
+export * from './domTagConfig'
 
 export const EMPTY_OBJ: { readonly [key: string]: any } = __DEV__
   ? Object.freeze({})
@@ -48,25 +52,47 @@ export const objectToString = Object.prototype.toString
 export const toTypeString = (value: unknown): string =>
   objectToString.call(value)
 
+export function toRawType(value: unknown): string {
+  return toTypeString(value).slice(8, -1)
+}
+
 export const isPlainObject = (val: unknown): val is object =>
   toTypeString(val) === '[object Object]'
 
-export const isReservedProp = (key: string): boolean =>
-  key === 'key' || key === 'ref' || key.startsWith(`onVnode`)
+export const isReservedProp = /*#__PURE__*/ makeMap(
+  'key,ref,' +
+    'onVnodeBeforeMount,onVnodeMounted,' +
+    'onVnodeBeforeUpdate,onVnodeUpdated,' +
+    'onVnodeBeforeUnmount,onVnodeUnmounted'
+)
+
+function cacheStringFunction<T extends (str: string) => string>(fn: T): T {
+  const cache: Record<string, string> = Object.create(null)
+  return ((str: string) => {
+    const hit = cache[str]
+    return hit || (cache[str] = fn(str))
+  }) as any
+}
 
 const camelizeRE = /-(\w)/g
-export const camelize = (str: string): string => {
-  return str.replace(camelizeRE, (_, c) => (c ? c.toUpperCase() : ''))
-}
+export const camelize = cacheStringFunction(
+  (str: string): string => {
+    return str.replace(camelizeRE, (_, c) => (c ? c.toUpperCase() : ''))
+  }
+)
 
 const hyphenateRE = /\B([A-Z])/g
-export const hyphenate = (str: string): string => {
-  return str.replace(hyphenateRE, '-$1').toLowerCase()
-}
+export const hyphenate = cacheStringFunction(
+  (str: string): string => {
+    return str.replace(hyphenateRE, '-$1').toLowerCase()
+  }
+)
 
-export const capitalize = (str: string): string => {
-  return str.charAt(0).toUpperCase() + str.slice(1)
-}
+export const capitalize = cacheStringFunction(
+  (str: string): string => {
+    return str.charAt(0).toUpperCase() + str.slice(1)
+  }
+)
 
 // compare whether a value has changed, accounting for NaN.
 export const hasChanged = (value: any, oldValue: any): boolean =>
