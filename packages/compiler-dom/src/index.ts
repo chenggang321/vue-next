@@ -1,45 +1,72 @@
 import {
   baseCompile,
+  baseParse,
   CompilerOptions,
   CodegenResult,
-  isBuiltInType
+  ParserOptions,
+  RootNode,
+  noopDirectiveTransform,
+  NodeTransform,
+  DirectiveTransform
 } from '@vue/compiler-core'
-import { parserOptionsMinimal } from './parserOptionsMinimal'
-import { parserOptionsStandard } from './parserOptionsStandard'
+import { parserOptions } from './parserOptions'
 import { transformStyle } from './transforms/transformStyle'
-import { transformCloak } from './transforms/vCloak'
 import { transformVHtml } from './transforms/vHtml'
 import { transformVText } from './transforms/vText'
 import { transformModel } from './transforms/vModel'
 import { transformOn } from './transforms/vOn'
 import { transformShow } from './transforms/vShow'
-import { TRANSITION, TRANSITION_GROUP } from './runtimeHelpers'
+import { warnTransitionChildren } from './transforms/warnTransitionChildren'
+import { stringifyStatic } from './transforms/stringifyStatic'
+import { ignoreSideEffectTags } from './transforms/ignoreSideEffectTags'
+import { extend } from '@vue/shared'
+
+export { parserOptions }
+
+export const DOMNodeTransforms: NodeTransform[] = [
+  transformStyle,
+  ...(__DEV__ ? [warnTransitionChildren] : [])
+]
+
+export const DOMDirectiveTransforms: Record<string, DirectiveTransform> = {
+  cloak: noopDirectiveTransform,
+  html: transformVHtml,
+  text: transformVText,
+  model: transformModel, // override compiler-core
+  on: transformOn, // override compiler-core
+  show: transformShow
+}
 
 export function compile(
   template: string,
   options: CompilerOptions = {}
 ): CodegenResult {
-  return baseCompile(template, {
-    ...options,
-    ...(__BROWSER__ ? parserOptionsMinimal : parserOptionsStandard),
-    nodeTransforms: [transformStyle, ...(options.nodeTransforms || [])],
-    directiveTransforms: {
-      cloak: transformCloak,
-      html: transformVHtml,
-      text: transformVText,
-      model: transformModel, // override compiler-core
-      on: transformOn,
-      show: transformShow,
-      ...(options.directiveTransforms || {})
-    },
-    isBuiltInComponent: tag => {
-      if (isBuiltInType(tag, `Transition`)) {
-        return TRANSITION
-      } else if (isBuiltInType(tag, `TransitionGroup`)) {
-        return TRANSITION_GROUP
-      }
-    }
-  })
+  return baseCompile(
+    template,
+    extend({}, parserOptions, options, {
+      nodeTransforms: [
+        // ignore <script> and <tag>
+        // this is not put inside DOMNodeTransforms because that list is used
+        // by compiler-ssr to generate vnode fallback branches
+        ignoreSideEffectTags,
+        ...DOMNodeTransforms,
+        ...(options.nodeTransforms || [])
+      ],
+      directiveTransforms: extend(
+        {},
+        DOMDirectiveTransforms,
+        options.directiveTransforms || {}
+      ),
+      transformHoist: __BROWSER__ ? null : stringifyStatic
+    })
+  )
 }
 
+export function parse(template: string, options: ParserOptions = {}): RootNode {
+  return baseParse(template, extend({}, parserOptions, options))
+}
+
+export * from './runtimeHelpers'
+export { transformStyle } from './transforms/transformStyle'
+export { createDOMCompilerError, DOMErrorCodes } from './errors'
 export * from '@vue/compiler-core'

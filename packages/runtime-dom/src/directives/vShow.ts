@@ -35,8 +35,16 @@ export const vShow: ObjectDirective<VShowElement> = {
       setDisplay(el, value)
     }
   },
-  beforeUnmount(el) {
-    setDisplay(el, true)
+  beforeUnmount(el, { value }) {
+    setDisplay(el, value)
+  }
+}
+
+if (__NODE_JS__) {
+  vShow.getSSRProps = ({ value }) => {
+    if (!value) {
+      return { style: { display: 'none' } }
+    }
   }
 }
 

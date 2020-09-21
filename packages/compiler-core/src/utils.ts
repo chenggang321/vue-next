@@ -4,8 +4,6 @@ import {
   ElementNode,
   NodeTypes,
   CallExpression,
-  SequenceExpression,
-  createSequenceExpression,
   createCallExpression,
   DirectiveNode,
   ElementTypes,
@@ -17,33 +15,33 @@ import {
   createObjectExpression,
   SlotOutletNode,
   TemplateNode,
-  BlockCodegenNode,
-  ElementCodegenNode,
-  SlotOutletCodegenNode,
-  ComponentCodegenNode,
+  RenderSlotCall,
   ExpressionNode,
-  IfBranchNode
+  IfBranchNode,
+  TextNode,
+  InterpolationNode,
+  VNodeCall,
+  SimpleExpressionNode
 } from './ast'
-import { parse } from 'acorn'
-import { walk } from 'estree-walker'
 import { TransformContext } from './transform'
 import {
-  OPEN_BLOCK,
   MERGE_PROPS,
-  RENDER_SLOT,
-  PORTAL,
+  TELEPORT,
   SUSPENSE,
   KEEP_ALIVE,
   BASE_TRANSITION
 } from './runtimeHelpers'
-import { isString, isFunction, isObject, hyphenate } from '@vue/shared'
+import { isString, isObject, hyphenate, extend } from '@vue/shared'
+
+export const isStaticExp = (p: JSChildNode): p is SimpleExpressionNode =>
+  p.type === NodeTypes.SIMPLE_EXPRESSION && p.isStatic
 
 export const isBuiltInType = (tag: string, expected: string): boolean =>
   tag === expected || tag === hyphenate(expected)
 
 export function isCoreComponent(tag: string): symbol | void {
-  if (isBuiltInType(tag, 'Portal')) {
-    return PORTAL
+  if (isBuiltInType(tag, 'Teleport')) {
+    return TELEPORT
   } else if (isBuiltInType(tag, 'Suspense')) {
     return SUSPENSE
   } else if (isBuiltInType(tag, 'KeepAlive')) {
@@ -53,47 +51,15 @@ export function isCoreComponent(tag: string): symbol | void {
   }
 }
 
-// cache node requires
-// lazy require dependencies so that they don't end up in rollup's dep graph
-// and thus can be tree-shaken in browser builds.
-let _parse: typeof parse
-let _walk: typeof walk
-
-export function loadDep(name: string) {
-  if (!__BROWSER__ && typeof process !== 'undefined' && isFunction(require)) {
-    return require(name)
-  } else {
-    // This is only used when we are building a dev-only build of the compiler
-    // which runs in the browser but also uses Node deps.
-    return (window as any)._deps[name]
-  }
-}
-
-export const parseJS: typeof parse = (code, options) => {
-  assert(
-    !__BROWSER__,
-    `Expression AST analysis can only be performed in non-browser builds.`
-  )
-  const parse = _parse || (_parse = loadDep('acorn').parse)
-  return parse(code, options)
-}
-
-export const walkJS: typeof walk = (ast, walker) => {
-  assert(
-    !__BROWSER__,
-    `Expression AST analysis can only be performed in non-browser builds.`
-  )
-  const walk = _walk || (_walk = loadDep('estree-walker').walk)
-  return walk(ast, walker)
-}
-
 const nonIdentifierRE = /^\d|[^\$\w]/
 export const isSimpleIdentifier = (name: string): boolean =>
   !nonIdentifierRE.test(name)
 
 const memberExpRE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*$/
-export const isMemberExpression = (path: string): boolean =>
-  memberExpRE.test(path)
+export const isMemberExpression = (path: string): boolean => {
+  if (!path) return false
+  return memberExpRE.test(path.trim())
+}
 
 export function getInnerRange(
   loc: SourceLocation,
@@ -125,7 +91,11 @@ export function advancePositionWithClone(
   source: string,
   numberOfCharacters: number = source.length
 ): Position {
-  return advancePositionWithMutation({ ...pos }, source, numberOfCharacters)
+  return advancePositionWithMutation(
+    extend({}, pos),
+    source,
+    numberOfCharacters
+  )
 }
 
 // advance by mutation without cloning (for performance reasons), since this
@@ -149,7 +119,7 @@ export function advancePositionWithMutation(
   pos.column =
     lastNewLinePos === -1
       ? pos.column + numberOfCharacters
-      : Math.max(1, numberOfCharacters - lastNewLinePos)
+      : numberOfCharacters - lastNewLinePos
 
   return pos
 }
@@ -181,36 +151,45 @@ export function findDir(
 export function findProp(
   node: ElementNode,
   name: string,
-  dynamicOnly: boolean = false
+  dynamicOnly: boolean = false,
+  allowEmpty: boolean = false
 ): ElementNode['props'][0] | undefined {
   for (let i = 0; i < node.props.length; i++) {
     const p = node.props[i]
     if (p.type === NodeTypes.ATTRIBUTE) {
       if (dynamicOnly) continue
-      if (p.name === name && p.value) {
+      if (p.name === name && (p.value || allowEmpty)) {
         return p
       }
     } else if (
       p.name === 'bind' &&
-      p.arg &&
-      p.arg.type === NodeTypes.SIMPLE_EXPRESSION &&
-      p.arg.isStatic &&
-      p.arg.content === name &&
-      p.exp
+      (p.exp || allowEmpty) &&
+      isBindKey(p.arg, name)
     ) {
       return p
     }
   }
 }
 
-export function createBlockExpression(
-  blockExp: BlockCodegenNode,
-  context: TransformContext
-): SequenceExpression {
-  return createSequenceExpression([
-    createCallExpression(context.helper(OPEN_BLOCK)),
-    blockExp
-  ])
+export function isBindKey(arg: DirectiveNode['arg'], name: string): boolean {
+  return !!(arg && isStaticExp(arg) && arg.content === name)
+}
+
+export function hasDynamicKeyVBind(node: ElementNode): boolean {
+  return node.props.some(
+    p =>
+      p.type === NodeTypes.DIRECTIVE &&
+      p.name === 'bind' &&
+      (!p.arg || // v-bind="obj"
+      p.arg.type !== NodeTypes.SIMPLE_EXPRESSION || // v-bind:[_ctx.foo]
+        !p.arg.isStatic) // v-bind:[foo]
+  )
+}
+
+export function isText(
+  node: TemplateChildNode
+): node is TextNode | InterpolationNode {
+  return node.type === NodeTypes.INTERPOLATION || node.type === NodeTypes.TEXT
 }
 
 export function isVSlot(p: ElementNode['props'][0]): p is DirectiveNode {
@@ -232,13 +211,13 @@ export function isSlotOutlet(
 }
 
 export function injectProp(
-  node: ElementCodegenNode | ComponentCodegenNode | SlotOutletCodegenNode,
+  node: VNodeCall | RenderSlotCall,
   prop: Property,
   context: TransformContext
 ) {
   let propsWithInjection: ObjectExpression | CallExpression
   const props =
-    node.callee === RENDER_SLOT ? node.arguments[2] : node.arguments[1]
+    node.type === NodeTypes.VNODE_CALL ? node.props : node.arguments[2]
   if (props == null || isString(props)) {
     propsWithInjection = createObjectExpression([prop])
   } else if (props.type === NodeTypes.JS_CALL_EXPRESSION) {
@@ -253,7 +232,19 @@ export function injectProp(
     }
     propsWithInjection = props
   } else if (props.type === NodeTypes.JS_OBJECT_EXPRESSION) {
-    props.properties.unshift(prop)
+    let alreadyExists = false
+    // check existing key to avoid overriding user provided keys
+    if (prop.key.type === NodeTypes.SIMPLE_EXPRESSION) {
+      const propKeyName = prop.key.content
+      alreadyExists = props.properties.some(
+        p =>
+          p.key.type === NodeTypes.SIMPLE_EXPRESSION &&
+          p.key.content === propKeyName
+      )
+    }
+    if (!alreadyExists) {
+      props.properties.unshift(prop)
+    }
     propsWithInjection = props
   } else {
     // single v-bind with expression, return a merged replacement
@@ -262,10 +253,10 @@ export function injectProp(
       props
     ])
   }
-  if (node.callee === RENDER_SLOT) {
-    node.arguments[2] = propsWithInjection
+  if (node.type === NodeTypes.VNODE_CALL) {
+    node.props = propsWithInjection
   } else {
-    node.arguments[1] = propsWithInjection
+    node.arguments[2] = propsWithInjection
   }
 }
 

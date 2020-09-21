@@ -2,22 +2,17 @@ import {
   VNode,
   VNodeProps,
   createVNode,
-  VNodeChildren,
+  VNodeArrayChildren,
   Fragment,
-  Portal,
   isVNode
 } from './vnode'
+import { Teleport, TeleportProps } from './components/Teleport'
 import { Suspense, SuspenseProps } from './components/Suspense'
 import { isObject, isArray } from '@vue/shared'
 import { RawSlots } from './componentSlots'
-import { FunctionalComponent } from './component'
-import {
-  ComponentOptionsWithoutProps,
-  ComponentOptionsWithArrayProps,
-  ComponentOptionsWithObjectProps,
-  ComponentOptions
-} from './apiOptions'
-import { ExtractPropTypes } from './componentProps'
+import { FunctionalComponent, Component, ComponentOptions } from './component'
+import { EmitsOptions } from './componentEmits'
+import { DefineComponent } from './apiDefineComponent'
 
 // `h` is a more user-friendly version of `createVNode` that allows omitting the
 // props when possible. It is intended for manually written render functions.
@@ -52,25 +47,25 @@ h(Component, null, {})
 
 type RawProps = VNodeProps & {
   // used to differ from a single VNode object as children
-  _isVNode?: never
+  __v_isVNode?: never
   // used to differ from Array children
   [Symbol.iterator]?: never
-}
+} & Record<string, any>
 
 type RawChildren =
   | string
   | number
   | boolean
   | VNode
-  | VNodeChildren
+  | VNodeArrayChildren
   | (() => any)
 
-// fake constructor type returned from `createComponent`
+// fake constructor type returned from `defineComponent`
 interface Constructor<P = any> {
   __isFragment?: never
-  __isPortal?: never
+  __isTeleport?: never
   __isSuspense?: never
-  new (): { $props: P }
+  new (...args: any[]): { $props: P }
 }
 
 // The following is a series of overloads for providing props validation of
@@ -81,21 +76,21 @@ export function h(type: string, children?: RawChildren): VNode
 export function h(
   type: string,
   props?: RawProps | null,
-  children?: RawChildren
+  children?: RawChildren | RawSlots
 ): VNode
 
 // fragment
-export function h(type: typeof Fragment, children?: VNodeChildren): VNode
+export function h(type: typeof Fragment, children?: VNodeArrayChildren): VNode
 export function h(
   type: typeof Fragment,
   props?: RawProps | null,
-  children?: VNodeChildren
+  children?: VNodeArrayChildren
 ): VNode
 
-// portal (target prop is required)
+// teleport (target prop is required)
 export function h(
-  type: typeof Portal,
-  props: RawProps & { target: any },
+  type: typeof Teleport,
+  props: RawProps & TeleportProps,
   children: RawChildren
 ): VNode
 
@@ -108,29 +103,30 @@ export function h(
 ): VNode
 
 // functional component
-export function h(type: FunctionalComponent, children?: RawChildren): VNode
-export function h<P>(
-  type: FunctionalComponent<P>,
+export function h<P, E extends EmitsOptions = {}>(
+  type: FunctionalComponent<P, E>,
   props?: (RawProps & P) | ({} extends P ? null : never),
   children?: RawChildren | RawSlots
 ): VNode
 
-// stateful component
-export function h(type: ComponentOptions, children?: RawChildren): VNode
+// catch-all for generic component types
+export function h(type: Component, children?: RawChildren): VNode
+
+// component without props
 export function h(
-  type: ComponentOptionsWithoutProps | ComponentOptionsWithArrayProps,
-  props?: RawProps | null,
-  children?: RawChildren | RawSlots
-): VNode
-export function h<O>(
-  type: ComponentOptionsWithObjectProps<O>,
-  props?:
-    | (RawProps & ExtractPropTypes<O>)
-    | ({} extends ExtractPropTypes<O> ? null : never),
+  type: Component,
+  props: null,
   children?: RawChildren | RawSlots
 ): VNode
 
-// fake constructor type returned by `createComponent`
+// exclude `defineComponent` constructors
+export function h<P>(
+  type: ComponentOptions<P>,
+  props?: (RawProps & P) | ({} extends P ? null : never),
+  children?: RawChildren | RawSlots
+): VNode
+
+// fake constructor type returned by `defineComponent` or class component
 export function h(type: Constructor, children?: RawChildren): VNode
 export function h<P>(
   type: Constructor<P>,
@@ -138,9 +134,18 @@ export function h<P>(
   children?: RawChildren | RawSlots
 ): VNode
 
+// fake constructor type returned by `defineComponent`
+export function h(type: DefineComponent, children?: RawChildren): VNode
+export function h<P>(
+  type: DefineComponent<P>,
+  props?: (RawProps & P) | ({} extends P ? null : never),
+  children?: RawChildren | RawSlots
+): VNode
+
 // Actual implementation
 export function h(type: any, propsOrChildren?: any, children?: any): VNode {
-  if (arguments.length === 2) {
+  const l = arguments.length
+  if (l === 2) {
     if (isObject(propsOrChildren) && !isArray(propsOrChildren)) {
       // single vnode without props
       if (isVNode(propsOrChildren)) {
@@ -153,7 +158,9 @@ export function h(type: any, propsOrChildren?: any, children?: any): VNode {
       return createVNode(type, null, propsOrChildren)
     }
   } else {
-    if (isVNode(children)) {
+    if (l > 3) {
+      children = Array.prototype.slice.call(arguments, 2)
+    } else if (l === 3 && isVNode(children)) {
       children = [children]
     }
     return createVNode(type, propsOrChildren, children)

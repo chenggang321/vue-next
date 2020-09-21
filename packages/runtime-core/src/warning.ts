@@ -1,11 +1,16 @@
 import { VNode } from './vnode'
-import { Data, ComponentInternalInstance, Component } from './component'
+import {
+  Data,
+  ComponentInternalInstance,
+  ConcreteComponent,
+  formatComponentName
+} from './component'
 import { isString, isFunction } from '@vue/shared'
-import { toRaw, isRef, pauseTracking, resumeTracking } from '@vue/reactivity'
+import { toRaw, isRef, pauseTracking, resetTracking } from '@vue/reactivity'
 import { callWithErrorHandling, ErrorCodes } from './errorHandling'
 
 type ComponentVNode = VNode & {
-  type: Component
+  type: ConcreteComponent
 }
 
 const stack: VNode[] = []
@@ -43,13 +48,16 @@ export function warn(msg: string, ...args: any[]) {
         msg + args.join(''),
         instance && instance.proxy,
         trace
-          .map(({ vnode }) => `at <${formatComponentName(vnode)}>`)
+          .map(
+            ({ vnode }) => `at <${formatComponentName(instance, vnode.type)}>`
+          )
           .join('\n'),
         trace
       ]
     )
   } else {
     const warnArgs = [`[Vue warn]: ${msg}`, ...args]
+    /* istanbul ignore if */
     if (
       trace.length &&
       // avoid spamming console during tests
@@ -60,7 +68,7 @@ export function warn(msg: string, ...args: any[]) {
     console.warn(...warnArgs)
   }
 
-  resumeTracking()
+  resetTracking()
 }
 
 function getComponentTrace(): ComponentTraceStack {
@@ -84,14 +92,15 @@ function getComponentTrace(): ComponentTraceStack {
         recurseCount: 0
       })
     }
-    const parentInstance: ComponentInternalInstance | null = currentVNode.component!
-      .parent
+    const parentInstance: ComponentInternalInstance | null =
+      currentVNode.component && currentVNode.component.parent
     currentVNode = parentInstance && parentInstance.vnode
   }
 
   return normalizedStack
 }
 
+/* istanbul ignore next */
 function formatTrace(trace: ComponentTraceStack): any[] {
   const logs: any[] = []
   trace.forEach((entry, i) => {
@@ -103,32 +112,19 @@ function formatTrace(trace: ComponentTraceStack): any[] {
 function formatTraceEntry({ vnode, recurseCount }: TraceEntry): any[] {
   const postfix =
     recurseCount > 0 ? `... (${recurseCount} recursive calls)` : ``
-  const open = ` at <${formatComponentName(vnode)}`
+  const isRoot = vnode.component ? vnode.component.parent == null : false
+  const open = ` at <${formatComponentName(
+    vnode.component,
+    vnode.type,
+    isRoot
+  )}`
   const close = `>` + postfix
-  const rootLabel = vnode.component!.parent == null ? `(Root)` : ``
   return vnode.props
-    ? [open, ...formatProps(vnode.props), close, rootLabel]
-    : [open + close, rootLabel]
+    ? [open, ...formatProps(vnode.props), close]
+    : [open + close]
 }
 
-const classifyRE = /(?:^|[-_])(\w)/g
-const classify = (str: string): string =>
-  str.replace(classifyRE, c => c.toUpperCase()).replace(/[-_]/g, '')
-
-function formatComponentName(vnode: ComponentVNode, file?: string): string {
-  const Component = vnode.type as Component
-  let name = isFunction(Component)
-    ? Component.displayName || Component.name
-    : Component.name
-  if (!name && file) {
-    const match = file.match(/([^/\\]+)\.vue$/)
-    if (match) {
-      name = match[1]
-    }
-  }
-  return name ? classify(name) : 'Anonymous'
-}
-
+/* istanbul ignore next */
 function formatProps(props: Data): any[] {
   const res: any[] = []
   const keys = Object.keys(props)
@@ -143,6 +139,7 @@ function formatProps(props: Data): any[] {
 
 function formatProp(key: string, value: unknown): any[]
 function formatProp(key: string, value: unknown, raw: true): any
+/* istanbul ignore next */
 function formatProp(key: string, value: unknown, raw?: boolean): any {
   if (isString(value)) {
     value = JSON.stringify(value)

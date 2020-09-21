@@ -11,8 +11,8 @@ const HTML_TAGS =
   'time,u,var,wbr,area,audio,map,track,video,embed,object,param,source,' +
   'canvas,script,noscript,del,ins,caption,col,colgroup,table,thead,tbody,td,' +
   'th,tr,button,datalist,fieldset,form,input,label,legend,meter,optgroup,' +
-  'option,output,progress,select,textarea,details,dialog,menu,menuitem,' +
-  'summary,content,element,shadow,template,blockquote,iframe,tfoot'
+  'option,output,progress,select,textarea,details,dialog,menu,' +
+  'summary,template,blockquote,iframe,tfoot'
 
 // https://developer.mozilla.org/en-US/docs/Web/SVG/Element
 const SVG_TAGS =
@@ -22,7 +22,7 @@ const SVG_TAGS =
   'feDistanceLight,feDropShadow,feFlood,feFuncA,feFuncB,feFuncG,feFuncR,' +
   'feGaussianBlur,feImage,feMerge,feMergeNode,feMorphology,feOffset,' +
   'fePointLight,feSpecularLighting,feSpotLight,feTile,feTurbulence,filter,' +
-  'foreignObject,g,hatch,hatchpath,image,line,lineGradient,marker,mask,' +
+  'foreignObject,g,hatch,hatchpath,image,line,linearGradient,marker,mask,' +
   'mesh,meshgradient,meshpatch,meshrow,metadata,mpath,path,pattern,' +
   'polygon,polyline,radialGradient,rect,set,solidcolor,stop,switch,symbol,' +
   'text,textPath,title,tspan,unknown,use,view'

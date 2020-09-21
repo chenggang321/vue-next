@@ -1,27 +1,19 @@
 import {
-  parse,
+  baseParse as parse,
   transform,
   NodeTypes,
   generate,
-  CompilerOptions
+  CompilerOptions,
+  getBaseTransformPreset
 } from '../../src'
-import { transformOnce } from '../../src/transforms/vOnce'
-import { transformElement } from '../../src/transforms/transformElement'
-import {
-  CREATE_VNODE,
-  RENDER_SLOT,
-  SET_BLOCK_TRACKING
-} from '../../src/runtimeHelpers'
-import { transformBind } from '../../src/transforms/vBind'
-import { transformSlotOutlet } from '../../src/transforms/transformSlotOutlet'
+import { RENDER_SLOT, SET_BLOCK_TRACKING } from '../../src/runtimeHelpers'
 
 function transformWithOnce(template: string, options: CompilerOptions = {}) {
   const ast = parse(template)
+  const [nodeTransforms, directiveTransforms] = getBaseTransformPreset()
   transform(ast, {
-    nodeTransforms: [transformOnce, transformElement, transformSlotOutlet],
-    directiveTransforms: {
-      bind: transformBind
-    },
+    nodeTransforms,
+    directiveTransforms,
     ...options
   })
   return ast
@@ -36,8 +28,8 @@ describe('compiler: v-once transform', () => {
       type: NodeTypes.JS_CACHE_EXPRESSION,
       index: 1,
       value: {
-        type: NodeTypes.JS_CALL_EXPRESSION,
-        callee: CREATE_VNODE
+        type: NodeTypes.VNODE_CALL,
+        tag: `"div"`
       }
     })
     expect(generate(root).code).toMatchSnapshot()
@@ -51,8 +43,8 @@ describe('compiler: v-once transform', () => {
       type: NodeTypes.JS_CACHE_EXPRESSION,
       index: 1,
       value: {
-        type: NodeTypes.JS_CALL_EXPRESSION,
-        callee: CREATE_VNODE
+        type: NodeTypes.VNODE_CALL,
+        tag: `"div"`
       }
     })
     expect(generate(root).code).toMatchSnapshot()
@@ -66,8 +58,8 @@ describe('compiler: v-once transform', () => {
       type: NodeTypes.JS_CACHE_EXPRESSION,
       index: 1,
       value: {
-        type: NodeTypes.JS_CALL_EXPRESSION,
-        callee: CREATE_VNODE
+        type: NodeTypes.VNODE_CALL,
+        tag: `_component_Comp`
       }
     })
     expect(generate(root).code).toMatchSnapshot()
@@ -100,10 +92,36 @@ describe('compiler: v-once transform', () => {
       type: NodeTypes.JS_CACHE_EXPRESSION,
       index: 1,
       value: {
-        type: NodeTypes.JS_CALL_EXPRESSION,
-        callee: CREATE_VNODE
+        type: NodeTypes.VNODE_CALL,
+        tag: `"div"`
       }
     })
     expect(generate(root).code).toMatchSnapshot()
+  })
+
+  test('with v-if', () => {
+    const root = transformWithOnce(`<div v-if="true" v-once />`)
+    expect(root.cached).toBe(1)
+    expect(root.helpers).toContain(SET_BLOCK_TRACKING)
+    expect(root.children[0]).toMatchObject({
+      type: NodeTypes.IF,
+      // should cache the entire v-if expression, not just a single branch
+      codegenNode: {
+        type: NodeTypes.JS_CACHE_EXPRESSION
+      }
+    })
+  })
+
+  test('with v-for', () => {
+    const root = transformWithOnce(`<div v-for="i in list" v-once />`)
+    expect(root.cached).toBe(1)
+    expect(root.helpers).toContain(SET_BLOCK_TRACKING)
+    expect(root.children[0]).toMatchObject({
+      type: NodeTypes.FOR,
+      // should cache the entire v-for expression, not just a single branch
+      codegenNode: {
+        type: NodeTypes.JS_CACHE_EXPRESSION
+      }
+    })
   })
 })

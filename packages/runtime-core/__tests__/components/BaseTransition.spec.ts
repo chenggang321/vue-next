@@ -9,7 +9,8 @@ import {
   serializeInner,
   serialize,
   VNodeProps,
-  KeepAlive
+  KeepAlive,
+  TestElement
 } from '@vue/runtime-test'
 
 function mount(
@@ -42,16 +43,22 @@ function mockProps(extra: BaseTransitionProps = {}, withKeepAlive = false) {
       }
     }),
     onEnter: jest.fn((el, done) => {
-      cbs.doneEnter[serialize(el)] = done
+      cbs.doneEnter[serialize(el as TestElement)] = done
     }),
     onAfterEnter: jest.fn(),
     onEnterCancelled: jest.fn(),
     onBeforeLeave: jest.fn(),
     onLeave: jest.fn((el, done) => {
-      cbs.doneLeave[serialize(el)] = done
+      cbs.doneLeave[serialize(el as TestElement)] = done
     }),
     onAfterLeave: jest.fn(),
     onLeaveCancelled: jest.fn(),
+    onBeforeAppear: jest.fn(),
+    onAppear: jest.fn((el, done) => {
+      cbs.doneEnter[serialize(el as TestElement)] = done
+    }),
+    onAfterAppear: jest.fn(),
+    onAppearCancelled: jest.fn(),
     ...extra
   }
   return {
@@ -64,8 +71,10 @@ function assertCalls(
   props: BaseTransitionProps,
   calls: Record<string, number>
 ) {
-  Object.keys(calls).forEach((key: keyof BaseTransitionProps) => {
-    expect(props[key]).toHaveBeenCalledTimes(calls[key])
+  Object.keys(calls).forEach(key => {
+    expect(props[key as keyof BaseTransitionProps]).toHaveBeenCalledTimes(
+      calls[key]
+    )
   })
 }
 
@@ -129,8 +138,33 @@ function runTestWithKeepAlive(tester: TestFn) {
 }
 
 describe('BaseTransition', () => {
-  test('appear: true', () => {
-    const { props, cbs } = mockProps({ appear: true })
+  test('appear: true w/ appear hooks', () => {
+    const { props, cbs } = mockProps({
+      appear: true
+    })
+    mount(props, () => h('div'))
+    expect(props.onBeforeAppear).toHaveBeenCalledTimes(1)
+    expect(props.onAppear).toHaveBeenCalledTimes(1)
+    expect(props.onAfterAppear).not.toHaveBeenCalled()
+
+    // enter should not be called
+    expect(props.onBeforeEnter).not.toHaveBeenCalled()
+    expect(props.onEnter).not.toHaveBeenCalled()
+    expect(props.onAfterEnter).not.toHaveBeenCalled()
+
+    cbs.doneEnter[`<div></div>`]()
+    expect(props.onAfterAppear).toHaveBeenCalledTimes(1)
+    expect(props.onAfterEnter).not.toHaveBeenCalled()
+  })
+
+  test('appear: true w/ fallback to enter hooks', () => {
+    const { props, cbs } = mockProps({
+      appear: true,
+      onBeforeAppear: undefined,
+      onAppear: undefined,
+      onAfterAppear: undefined,
+      onAppearCancelled: undefined
+    })
     mount(props, () => h('div'))
     expect(props.onBeforeEnter).toHaveBeenCalledTimes(1)
     expect(props.onEnter).toHaveBeenCalledTimes(1)
@@ -147,19 +181,19 @@ describe('BaseTransition', () => {
       const toggle = ref(true)
       const hooks: VNodeProps = {
         onVnodeBeforeMount(vnode) {
-          vnode.transition!.beforeEnter(vnode.el)
+          vnode.transition!.beforeEnter(vnode.el!)
         },
         onVnodeMounted(vnode) {
-          vnode.transition!.enter(vnode.el)
+          vnode.transition!.enter(vnode.el!)
         },
         onVnodeUpdated(vnode, oldVnode) {
           if (oldVnode.props!.id !== vnode.props!.id) {
             if (vnode.props!.id) {
-              vnode.transition!.beforeEnter(vnode.el)
+              vnode.transition!.beforeEnter(vnode.el!)
               state.show = true
-              vnode.transition!.enter(vnode.el)
+              vnode.transition!.enter(vnode.el!)
             } else {
-              vnode.transition!.leave(vnode.el, () => {
+              vnode.transition!.leave(vnode.el!, () => {
                 state.show = false
               })
             }
@@ -204,11 +238,11 @@ describe('BaseTransition', () => {
       const { hooks } = mockPersistedHooks()
       mount(props, () => h('div', hooks))
 
-      expect(props.onBeforeEnter).toHaveBeenCalledTimes(1)
-      expect(props.onEnter).toHaveBeenCalledTimes(1)
-      expect(props.onAfterEnter).not.toHaveBeenCalled()
+      expect(props.onBeforeAppear).toHaveBeenCalledTimes(1)
+      expect(props.onAppear).toHaveBeenCalledTimes(1)
+      expect(props.onAfterAppear).not.toHaveBeenCalled()
       cbs.doneEnter[`<div></div>`]()
-      expect(props.onAfterEnter).toHaveBeenCalledTimes(1)
+      expect(props.onAfterAppear).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -661,7 +695,7 @@ describe('BaseTransition', () => {
       expect(props.onAfterEnter).toHaveBeenCalledTimes(1)
       assertCalledWithEl(props.onAfterEnter, falseSerialized)
 
-      // toggele again
+      // toggle again
       toggle.value = true
       await nextTick()
       expect(serializeInner(root)).toBe(`${falseSerialized}<!---->`)
@@ -737,7 +771,7 @@ describe('BaseTransition', () => {
       await nextTick()
       // expected behavior: the previous true branch is preserved,
       // and a placeholder is injected for the replacement.
-      // the leaving node is repalced with the replace node (of the same branch)
+      // the leaving node is replaced with the replace node (of the same branch)
       // when it finishes leaving
       expect(serializeInner(root)).toBe(`${trueSerialized}<!---->`)
       // enter hooks should never be called (for neither branch)

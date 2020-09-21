@@ -1,20 +1,22 @@
 import {
-  parse as baseParse,
-  TextModes,
   NodeTypes,
-  TextNode,
   ElementNode,
-  SourceLocation
+  SourceLocation,
+  CompilerError,
+  TextModes,
+  BindingMetadata
 } from '@vue/compiler-core'
+import * as CompilerDOM from '@vue/compiler-dom'
 import { RawSourceMap, SourceMapGenerator } from 'source-map'
-import LRUCache from 'lru-cache'
-import { generateCodeFrame } from '@vue/shared'
+import { TemplateCompiler } from './compileTemplate'
+import { Statement } from '@babel/types'
 
 export interface SFCParseOptions {
   filename?: string
   sourceMap?: boolean
   sourceRoot?: string
   pad?: boolean | 'line' | 'space'
+  compiler?: TemplateCompiler
 }
 
 export interface SFCBlock {
@@ -34,82 +36,161 @@ export interface SFCTemplateBlock extends SFCBlock {
 
 export interface SFCScriptBlock extends SFCBlock {
   type: 'script'
+  setup?: string | boolean
+  bindings?: BindingMetadata
+  scriptAst?: Statement[]
+  scriptSetupAst?: Statement[]
 }
 
 export interface SFCStyleBlock extends SFCBlock {
   type: 'style'
   scoped?: boolean
+  vars?: string
   module?: string | boolean
 }
 
 export interface SFCDescriptor {
   filename: string
+  source: string
   template: SFCTemplateBlock | null
   script: SFCScriptBlock | null
+  scriptSetup: SFCScriptBlock | null
   styles: SFCStyleBlock[]
   customBlocks: SFCBlock[]
 }
 
+export interface SFCParseResult {
+  descriptor: SFCDescriptor
+  errors: (CompilerError | SyntaxError)[]
+}
+
 const SFC_CACHE_MAX_SIZE = 500
-const sourceToSFC = new LRUCache<string, SFCDescriptor>(SFC_CACHE_MAX_SIZE)
+const sourceToSFC =
+  __GLOBAL__ || __ESM_BROWSER__
+    ? new Map<string, SFCParseResult>()
+    : (new (require('lru-cache'))(SFC_CACHE_MAX_SIZE) as Map<
+        string,
+        SFCParseResult
+      >)
+
 export function parse(
   source: string,
   {
     sourceMap = true,
     filename = 'component.vue',
     sourceRoot = '',
-    pad = false
+    pad = false,
+    compiler = CompilerDOM
   }: SFCParseOptions = {}
-): SFCDescriptor {
-  const sourceKey = source + sourceMap + filename + sourceRoot + pad
+): SFCParseResult {
+  const sourceKey =
+    source + sourceMap + filename + sourceRoot + pad + compiler.parse
   const cache = sourceToSFC.get(sourceKey)
   if (cache) {
     return cache
   }
 
-  const sfc: SFCDescriptor = {
+  const descriptor: SFCDescriptor = {
     filename,
+    source,
     template: null,
     script: null,
+    scriptSetup: null,
     styles: [],
     customBlocks: []
   }
 
-  const ast = baseParse(source, {
+  const errors: (CompilerError | SyntaxError)[] = []
+  const ast = compiler.parse(source, {
+    // there are no components at SFC parsing level
     isNativeTag: () => true,
-    getTextMode: () => TextModes.RAWTEXT
+    // preserve all whitespaces
+    isPreTag: () => true,
+    getTextMode: ({ tag, props }, parent) => {
+      // all top level elements except <template> are parsed as raw text
+      // containers
+      if (
+        (!parent && tag !== 'template') ||
+        // <template lang="xxx"> should also be treated as raw text
+        props.some(
+          p =>
+            p.type === NodeTypes.ATTRIBUTE &&
+            p.name === 'lang' &&
+            p.value &&
+            p.value.content !== 'html'
+        )
+      ) {
+        return TextModes.RAWTEXT
+      } else {
+        return TextModes.DATA
+      }
+    },
+    onError: e => {
+      errors.push(e)
+    }
   })
 
   ast.children.forEach(node => {
     if (node.type !== NodeTypes.ELEMENT) {
       return
     }
-    if (!node.children.length) {
+    if (!node.children.length && !hasSrc(node)) {
       return
     }
     switch (node.tag) {
       case 'template':
-        if (!sfc.template) {
-          sfc.template = createBlock(node, source, pad) as SFCTemplateBlock
+        if (!descriptor.template) {
+          descriptor.template = createBlock(
+            node,
+            source,
+            false
+          ) as SFCTemplateBlock
         } else {
-          warnDuplicateBlock(source, filename, node)
+          errors.push(createDuplicateBlockError(node))
         }
         break
       case 'script':
-        if (!sfc.script) {
-          sfc.script = createBlock(node, source, pad) as SFCScriptBlock
-        } else {
-          warnDuplicateBlock(source, filename, node)
+        const block = createBlock(node, source, pad) as SFCScriptBlock
+        const isSetup = !!block.attrs.setup
+        if (isSetup && !descriptor.scriptSetup) {
+          descriptor.scriptSetup = block
+          break
         }
+        if (!isSetup && !descriptor.script) {
+          descriptor.script = block
+          break
+        }
+        errors.push(createDuplicateBlockError(node, isSetup))
         break
       case 'style':
-        sfc.styles.push(createBlock(node, source, pad) as SFCStyleBlock)
+        descriptor.styles.push(createBlock(node, source, pad) as SFCStyleBlock)
         break
       default:
-        sfc.customBlocks.push(createBlock(node, source, pad))
+        descriptor.customBlocks.push(createBlock(node, source, pad))
         break
     }
   })
+
+  if (descriptor.scriptSetup) {
+    if (descriptor.scriptSetup.src) {
+      errors.push(
+        new SyntaxError(
+          `<script setup> cannot use the "src" attribute because ` +
+            `its syntax will be ambiguous outside of the component.`
+        )
+      )
+      descriptor.scriptSetup = null
+    }
+    if (descriptor.script && descriptor.script.src) {
+      errors.push(
+        new SyntaxError(
+          `<script> cannot use the "src" attribute when <script setup> is ` +
+            `also present because they must be processed together.`
+        )
+      )
+      descriptor.script = null
+    }
+  }
 
   if (sourceMap) {
     const genMap = (block: SFCBlock | null) => {
@@ -119,35 +200,35 @@ export function parse(
           source,
           block.content,
           sourceRoot,
-          pad ? 0 : block.loc.start.line - 1
+          !pad || block.type === 'template' ? block.loc.start.line - 1 : 0
         )
       }
     }
-    genMap(sfc.template)
-    genMap(sfc.script)
-    sfc.styles.forEach(genMap)
+    genMap(descriptor.template)
+    genMap(descriptor.script)
+    descriptor.styles.forEach(genMap)
+    descriptor.customBlocks.forEach(genMap)
   }
-  sourceToSFC.set(sourceKey, sfc)
 
-  return sfc
+  const result = {
+    descriptor,
+    errors
+  }
+  sourceToSFC.set(sourceKey, result)
+  return result
 }
 
-function warnDuplicateBlock(
-  source: string,
-  filename: string,
-  node: ElementNode
-) {
-  const codeFrame = generateCodeFrame(
-    source,
-    node.loc.start.offset,
-    node.loc.end.offset
-  )
-  const location = `${filename}:${node.loc.start.line}:${node.loc.start.column}`
-  console.warn(
-    `Single file component can contain only one ${
-      node.tag
-    } element (${location}):\n\n${codeFrame}`
-  )
+function createDuplicateBlockError(
+  node: ElementNode,
+  isScriptSetup = false
+): CompilerError {
+  const err = new SyntaxError(
+    `Single file component can contain only one <${node.tag}${
+      isScriptSetup ? ` setup` : ``
+    }> element`
+  ) as CompilerError
+  err.loc = node.loc
+  return err
 }
 
 function createBlock(
@@ -156,15 +237,26 @@ function createBlock(
   pad: SFCParseOptions['pad']
 ): SFCBlock {
   const type = node.tag
-  const text = node.children[0] as TextNode
+  let { start, end } = node.loc
+  let content = ''
+  if (node.children.length) {
+    start = node.children[0].loc.start
+    end = node.children[node.children.length - 1].loc.end
+    content = source.slice(start.offset, end.offset)
+  }
+  const loc = {
+    source: content,
+    start,
+    end
+  }
   const attrs: Record<string, string | true> = {}
   const block: SFCBlock = {
     type,
-    content: text.content,
-    loc: text.loc,
+    content,
+    loc,
     attrs
   }
-  if (node.tag !== 'template' && pad) {
+  if (pad) {
     block.content = padContent(source, block, pad) + block.content
   }
   node.props.forEach(p => {
@@ -177,11 +269,15 @@ function createBlock(
       } else if (type === 'style') {
         if (p.name === 'scoped') {
           ;(block as SFCStyleBlock).scoped = true
+        } else if (p.name === 'vars' && typeof attrs.vars === 'string') {
+          ;(block as SFCStyleBlock).vars = attrs.vars
         } else if (p.name === 'module') {
           ;(block as SFCStyleBlock).module = attrs[p.name]
         }
       } else if (type === 'template' && p.name === 'functional') {
         ;(block as SFCTemplateBlock).functional = true
+      } else if (type === 'script' && p.name === 'setup') {
+        ;(block as SFCScriptBlock).setup = attrs.setup
       }
     }
   })
@@ -206,17 +302,23 @@ function generateSourceMap(
   map.setSourceContent(filename, source)
   generated.split(splitRE).forEach((line, index) => {
     if (!emptyRE.test(line)) {
-      map.addMapping({
-        source: filename,
-        original: {
-          line: index + 1 + lineOffset,
-          column: 0
-        },
-        generated: {
-          line: index + 1,
-          column: 0
+      const originalLine = index + 1 + lineOffset
+      const generatedLine = index + 1
+      for (let i = 0; i < line.length; i++) {
+        if (!/\s/.test(line[i])) {
+          map.addMapping({
+            source: filename,
+            original: {
+              line: originalLine,
+              column: i
+            },
+            generated: {
+              line: generatedLine,
+              column: i
+            }
+          })
         }
-      })
+      }
     }
   })
   return JSON.parse(map.toString())
@@ -235,4 +337,13 @@ function padContent(
     const padChar = block.type === 'script' && !block.lang ? '//\n' : '\n'
     return Array(offset).join(padChar)
   }
+}
+
+function hasSrc(node: ElementNode) {
+  return node.props.some(p => {
+    if (p.type !== NodeTypes.ATTRIBUTE) {
+      return false
+    }
+    return p.name === 'src'
+  })
 }

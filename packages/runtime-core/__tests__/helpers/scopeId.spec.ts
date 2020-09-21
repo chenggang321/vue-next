@@ -17,6 +17,27 @@ describe('scopeId runtime support', () => {
     expect(serializeInner(root)).toBe(`<div parent><div parent></div></div>`)
   })
 
+  test('should attach scopeId to components in parent component', () => {
+    const Child = {
+      __scopeId: 'child',
+      render: withChildId(() => {
+        return h('div')
+      })
+    }
+    const App = {
+      __scopeId: 'parent',
+      render: withParentId(() => {
+        return h('div', [h(Child)])
+      })
+    }
+
+    const root = nodeOps.createElement('div')
+    render(h(App), root)
+    expect(serializeInner(root)).toBe(
+      `<div parent><div child parent></div></div>`
+    )
+  })
+
   test('should work on slots', () => {
     const Child = {
       __scopeId: 'child',
@@ -24,13 +45,18 @@ describe('scopeId runtime support', () => {
         return h('div', this.$slots.default())
       })
     }
+    const withChild2Id = withScopeId('child2')
+    const Child2 = {
+      __scopeId: 'child2',
+      render: withChild2Id(() => h('span'))
+    }
     const App = {
       __scopeId: 'parent',
       render: withParentId(() => {
         return h(
           Child,
           withParentId(() => {
-            return h('div')
+            return [h('div'), h(Child2)]
           })
         )
       })
@@ -41,7 +67,39 @@ describe('scopeId runtime support', () => {
     // - scopeId from parent
     // - slotted scopeId (with `-s` postfix) from child (the tree owner)
     expect(serializeInner(root)).toBe(
-      `<div child><div parent child-s></div></div>`
+      `<div child parent>` +
+        `<div parent child-s></div>` +
+        // component inside slot should have:
+        // - scopeId from template context
+        // - slotted scopeId from slot owner
+        // - its own scopeId
+        `<span child2 parent child-s></span>` +
+        `</div>`
     )
+  })
+
+  // #1988
+  test('should inherit scopeId through nested HOCs with inheritAttrs: false', () => {
+    const withParentId = withScopeId('parent')
+    const App = {
+      __scopeId: 'parent',
+      render: withParentId(() => {
+        return h(Child)
+      })
+    }
+
+    function Child() {
+      return h(Child2, { class: 'foo' })
+    }
+
+    function Child2() {
+      return h('div')
+    }
+    Child2.inheritAttrs = false
+
+    const root = nodeOps.createElement('div')
+    render(h(App), root)
+
+    expect(serializeInner(root)).toBe(`<div parent></div>`)
   })
 })

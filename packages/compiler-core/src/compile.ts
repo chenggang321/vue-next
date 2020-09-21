@@ -1,9 +1,9 @@
 import { CompilerOptions } from './options'
-import { parse } from './parse'
-import { transform } from './transform'
+import { baseParse } from './parse'
+import { transform, NodeTransform, DirectiveTransform } from './transform'
 import { generate, CodegenResult } from './codegen'
 import { RootNode } from './ast'
-import { isString } from '@vue/shared'
+import { isString, extend } from '@vue/shared'
 import { transformIf } from './transforms/vIf'
 import { transformFor } from './transforms/vFor'
 import { transformExpression } from './transforms/transformExpression'
@@ -16,6 +16,41 @@ import { transformText } from './transforms/transformText'
 import { transformOnce } from './transforms/vOnce'
 import { transformModel } from './transforms/vModel'
 import { defaultOnError, createCompilerError, ErrorCodes } from './errors'
+
+export type TransformPreset = [
+  NodeTransform[],
+  Record<string, DirectiveTransform>
+]
+
+export function getBaseTransformPreset(
+  prefixIdentifiers?: boolean
+): TransformPreset {
+  return [
+    [
+      transformOnce,
+      transformIf,
+      transformFor,
+      ...(!__BROWSER__ && prefixIdentifiers
+        ? [
+            // order is important
+            trackVForSlotScopes,
+            transformExpression
+          ]
+        : __BROWSER__ && __DEV__
+          ? [transformExpression]
+          : []),
+      transformSlotOutlet,
+      transformElement,
+      trackSlotScopes,
+      transformText
+    ],
+    {
+      on: transformOn,
+      bind: transformBind,
+      model: transformModel
+    }
+  ]
+}
 
 // we name it `baseCompile` so that higher order compilers like
 // @vue/compiler-dom can export `compile` while re-exporting everything else.
@@ -43,37 +78,30 @@ export function baseCompile(
     onError(createCompilerError(ErrorCodes.X_SCOPE_ID_NOT_SUPPORTED))
   }
 
-  const ast = isString(template) ? parse(template, options) : template
-  transform(ast, {
-    ...options,
-    prefixIdentifiers,
-    nodeTransforms: [
-      transformOnce,
-      transformIf,
-      transformFor,
-      ...(prefixIdentifiers
-        ? [
-            // order is important
-            trackVForSlotScopes,
-            transformExpression
-          ]
-        : []),
-      transformSlotOutlet,
-      transformElement,
-      trackSlotScopes,
-      transformText,
-      ...(options.nodeTransforms || []) // user transforms
-    ],
-    directiveTransforms: {
-      on: transformOn,
-      bind: transformBind,
-      model: transformModel,
-      ...(options.directiveTransforms || {}) // user transforms
-    }
-  })
-
-  return generate(ast, {
-    ...options,
+  const ast = isString(template) ? baseParse(template, options) : template
+  const [nodeTransforms, directiveTransforms] = getBaseTransformPreset(
     prefixIdentifiers
-  })
+  )
+  transform(
+    ast,
+    extend({}, options, {
+      prefixIdentifiers,
+      nodeTransforms: [
+        ...nodeTransforms,
+        ...(options.nodeTransforms || []) // user transforms
+      ],
+      directiveTransforms: extend(
+        {},
+        directiveTransforms,
+        options.directiveTransforms || {} // user transforms
+      )
+    })
+  )
+
+  return generate(
+    ast,
+    extend({}, options, {
+      prefixIdentifiers
+    })
+  )
 }
